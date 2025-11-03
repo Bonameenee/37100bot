@@ -1,0 +1,15 @@
+# --- FILE LOCALI DA NON CARICARE SU GITHUB ---
+
+# Configurazione privata (token, admin ecc.)
+config.json
+
+# Dati generati dal bot
+ordini.json
+
+# Ambiente virtuale Python
+venv/
+
+# File temporanei di sistema o editor
+__pycache__/
+*.pyc
+*.log
