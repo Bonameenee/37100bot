@@ -65,7 +65,7 @@ async def fetch_evento_giorno(app):
                     f"👋 Buongiorno 37100!\n"
                     f"🗓 *Data:* {data_str}\n"
                     f"🎉 *Evento del giorno:* {event}\n\n"
-                    "Usa /ordina per fare un ordine 🍕"
+                    "Usa /ordina per fare un ordine 🍕\nUsa /cancella per cancellarlo"
                 )
                 await app.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
             else:
