@@ -5,6 +5,7 @@ import datetime
 import json
 import os
 import requests
+from telegram.ext import MessageHandler, filters
 
 # ----------------------------------------------
 # Config
@@ -13,7 +14,7 @@ CONFIG_FILE = "config.json"
 
 def carica_config():
     if not os.path.exists(CONFIG_FILE):
-        raise FileNotFoundError("❌ File config.json non trovato! Crealo con TOKEN, ADMIN_ID e API_BASE_URL.")
+        raise FileNotFoundError("❌ File config.json non trovato! Crealo con TOKEN, ADMIN_ID, API_BASE_URL, API_TOKEN e CHAT_ID.")
     with open(CONFIG_FILE, "r") as f:
         return json.load(f)
 
@@ -22,6 +23,7 @@ TOKEN = config["TOKEN"]
 ADMIN_ID = config["ADMIN_ID"]
 API_BASE_URL = config.get("API_BASE_URL", "http://localhost:3000")
 API_TOKEN = config.get("API_TOKEN", "YOUR_TOKEN")
+CHAT_ID = config.get("CHAT_ID", None)  # chat dove inviare il messaggio automatico
 
 ORDINI_FILE = "ordini.json"
 ORDINI_APERTI = True
@@ -55,6 +57,19 @@ async def fetch_evento_giorno(app):
             EVENTO_ATTUALE = data
             ORDINI_APERTI = True
             print(f"✅ Evento di oggi: {event}")
+
+            # invio automatico messaggio giornaliero
+            if CHAT_ID:
+                data_str = data.get("date", "Data non disponibile")
+                msg = (
+                    f"👋 Buongiorno 37100!\n"
+                    f"🗓 *Data:* {data_str}\n"
+                    f"🎉 *Evento del giorno:* {event}\n\n"
+                    "Usa /ordina per fare un ordine 🍕"
+                )
+                await app.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
+            else:
+                print("⚠️ CHAT_ID non configurato, messaggio non inviato.")
         else:
             EVENTO_ATTUALE = None
             ORDINI_APERTI = False
@@ -70,10 +85,8 @@ async def fetch_evento_giorno(app):
 async def ciclo_eventi(app):
     while True:
         now = datetime.datetime.now()
-        # ogni giorno alle 08:00 → fetch evento
         if now.hour == 8 and now.minute == 0:
             await fetch_evento_giorno(app)
-        # alle 20:00 → chiudi ordini
         if now.hour == 20 and now.minute == 0:
             global ORDINI_APERTI
             ORDINI_APERTI = False
@@ -161,12 +174,43 @@ async def post_init(app):
     asyncio.create_task(ciclo_eventi(app))
     await fetch_evento_giorno(app)
 
+
+
+# ----------------------------------------------
+# Cancella qualsiasi messaggio non comando
+# ----------------------------------------------
+
+
+# Lista dei comandi consentiti
+COMANDI_CONSENTITI = ["/start", "/ordina", "/lista", "/cancella", "/clear"]
+
+async def elimina_non_comandi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message.text
+    if not msg:
+        # Cancella qualsiasi altro tipo di messaggio (immagine, sticker, ecc.)
+        try:
+            await update.message.delete()
+        except Exception as e:
+            print(f"Impossibile cancellare messaggio: {e}")
+        return
+
+    # Se non è uno dei comandi consentiti → elimina
+    if not any(msg.startswith(cmd) for cmd in COMANDI_CONSENTITI):
+        try:
+            await update.message.delete()
+        except Exception as e:
+            print(f"Impossibile cancellare messaggio: {e}")
+
+
+
+
 app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("ordina", ordina))
 app.add_handler(CommandHandler("lista", lista))
 app.add_handler(CommandHandler("cancella", cancella))
 app.add_handler(CommandHandler("clear", clear))
+app.add_handler(MessageHandler(filters.ALL, elimina_non_comandi))
 
-print("🤖 Bot 37100 avviato con scheduler eventi integrato...")
+print("🤖 Bot 37100 avviato con invio automatico eventi alle 08:00...")
 app.run_polling()
