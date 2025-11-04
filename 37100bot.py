@@ -1,11 +1,13 @@
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import asyncio
+import datetime
 import json
 import os
-import requests  # per chiamare le API HTTP
+import requests
 
 # ----------------------------------------------
-# Configurazione
+# Config
 # ----------------------------------------------
 CONFIG_FILE = "config.json"
 
@@ -18,13 +20,15 @@ def carica_config():
 config = carica_config()
 TOKEN = config["TOKEN"]
 ADMIN_ID = config["ADMIN_ID"]
-API_BASE_URL = config.get("API_BASE_URL", "http://localhost:3000")  # es. http://localhost:3000
+API_BASE_URL = config.get("API_BASE_URL", "http://localhost:3000")
 API_TOKEN = config.get("API_TOKEN", "YOUR_TOKEN")
 
 ORDINI_FILE = "ordini.json"
+ORDINI_APERTI = True
+EVENTO_ATTUALE = None
 
 # ----------------------------------------------
-# Funzioni di utilità
+# Utils
 # ----------------------------------------------
 def carica_ordini():
     if os.path.exists(ORDINI_FILE):
@@ -37,42 +41,77 @@ def salva_ordini(ordini):
         json.dump(ordini, f, indent=4)
 
 # ----------------------------------------------
-# /start → mostra evento del giorno da API
+# Funzione per fetch evento del giorno
 # ----------------------------------------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def fetch_evento_giorno(app):
+    global EVENTO_ATTUALE, ORDINI_APERTI
     try:
         url = f"{API_BASE_URL}/api/events/today?token={API_TOKEN}"
         response = requests.get(url, timeout=5)
         response.raise_for_status()
         data = response.json()
-
-        data_str = data.get("date", "Data non disponibile")
-        title = data.get("event", {}).get("title", "Nessun evento oggi")
-
-        msg = (
-            f"👋 Benvenuto nel bot 37100!\n"
-            f"🗓 *Data:* {data_str}\n"
-            f"🎉 *Evento del giorno:* {title}\n\n"
-            "Usa /ordina per fare un ordine 🍕"
-        )
-
-        await update.message.reply_text(msg, parse_mode="Markdown")
-
+        event = data.get("event", {}).get("title", None)
+        if event:
+            EVENTO_ATTUALE = data
+            ORDINI_APERTI = True
+            print(f"✅ Evento di oggi: {event}")
+        else:
+            EVENTO_ATTUALE = None
+            ORDINI_APERTI = False
+            print("ℹ️ Nessun evento per oggi.")
     except Exception as e:
-        print(f"Errore API: {e}")
-        await update.message.reply_text(
-            "👋 Benvenuto nel bot 37100!\n"
-            "⚠️ Non riesco a recuperare l'evento del giorno.\n"
-            "Usa /ordina per fare un ordine 🍕"
-        )
+        print(f"⚠️ Errore durante il fetch evento: {e}")
+        EVENTO_ATTUALE = None
+        ORDINI_APERTI = False
 
 # ----------------------------------------------
-# /ordina, /lista, /cancella, /clear (come prima)
+# Task ciclico giornaliero
+# ----------------------------------------------
+async def ciclo_eventi(app):
+    while True:
+        now = datetime.datetime.now()
+        # ogni giorno alle 08:00 → fetch evento
+        if now.hour == 8 and now.minute == 0:
+            await fetch_evento_giorno(app)
+        # alle 20:00 → chiudi ordini
+        if now.hour == 20 and now.minute == 0:
+            global ORDINI_APERTI
+            ORDINI_APERTI = False
+            print("🕗 Ordini chiusi per oggi.")
+        await asyncio.sleep(60)
+
+# ----------------------------------------------
+# /start
+# ----------------------------------------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global EVENTO_ATTUALE
+    if EVENTO_ATTUALE:
+        data_str = EVENTO_ATTUALE.get("date", "Data non disponibile")
+        title = EVENTO_ATTUALE.get("event", {}).get("title", "Nessun evento oggi")
+    else:
+        data_str = datetime.datetime.now().strftime("%Y-%m-%d")
+        title = "Nessun evento oggi"
+
+    msg = (
+        f"👋 Benvenuto nel bot 37100!\n"
+        f"🗓 *Data:* {data_str}\n"
+        f"🎉 *Evento del giorno:* {title}\n\n"
+        "Usa /ordina per fare un ordine 🍕"
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+# ----------------------------------------------
+# /ordina e altri
 # ----------------------------------------------
 async def ordina(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global ORDINI_APERTI
     user = update.effective_user
     nome = f"{user.first_name or ''} {user.last_name or ''}".strip()
     user_id = user.id
+
+    if not ORDINI_APERTI and user_id not in ADMIN_ID:
+        await update.message.reply_text("🚫 Gli ordini sono chiusi per oggi!")
+        return
 
     if not context.args:
         await update.message.reply_text("Devi scrivere cosa vuoi ordinare! Es: /ordina pizza margherita")
@@ -116,14 +155,18 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🧹 Tutti gli ordini sono stati cancellati!")
 
 # ----------------------------------------------
-# Avvio bot
+# Setup bot + ciclo eventi
 # ----------------------------------------------
-app = ApplicationBuilder().token(TOKEN).build()
+async def post_init(app):
+    asyncio.create_task(ciclo_eventi(app))
+    await fetch_evento_giorno(app)
+
+app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("ordina", ordina))
 app.add_handler(CommandHandler("lista", lista))
 app.add_handler(CommandHandler("cancella", cancella))
 app.add_handler(CommandHandler("clear", clear))
 
-print("🤖 Bot 37100 avviato con API integrate...")
+print("🤖 Bot 37100 avviato con scheduler eventi integrato...")
 app.run_polling()
