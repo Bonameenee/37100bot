@@ -1,11 +1,10 @@
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 import asyncio
 import datetime
 import json
 import os
 import requests
-from telegram.ext import MessageHandler, filters
 
 # ----------------------------------------------
 # Config
@@ -23,7 +22,10 @@ TOKEN = config["TOKEN"]
 ADMIN_ID = config["ADMIN_ID"]
 API_BASE_URL = config.get("API_BASE_URL", "http://localhost:3000")
 API_TOKEN = config.get("API_TOKEN", "YOUR_TOKEN")
-CHAT_ID = config.get("CHAT_ID", None)  # chat dove inviare il messaggio automatico
+
+# Chat e topic dove inviare messaggi e fare cleanup
+CHAT_ID = config.get("CHAT_ID", None)
+THREAD_ID = config.get("THREAD_ID", None)
 
 ORDINI_FILE = "ordini.json"
 ORDINI_APERTI = True
@@ -58,8 +60,8 @@ async def fetch_evento_giorno(app):
             ORDINI_APERTI = True
             print(f"✅ Evento di oggi: {event}")
 
-            # invio automatico messaggio giornaliero
-            if CHAT_ID:
+            # invio automatico messaggio giornaliero SOLO nel thread configurato
+            if CHAT_ID and THREAD_ID is not None:
                 data_str = data.get("date", "Data non disponibile")
                 msg = (
                     f"👋 Buongiorno 37100!\n"
@@ -67,9 +69,14 @@ async def fetch_evento_giorno(app):
                     f"🎉 *Evento del giorno:* {event}\n\n"
                     "Usa /ordina per fare un ordine 🍕\nUsa /cancella per cancellarlo"
                 )
-                await app.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
+                await app.bot.send_message(
+                    chat_id=CHAT_ID,
+                    message_thread_id=THREAD_ID,
+                    text=msg,
+                    parse_mode="Markdown"
+                )
             else:
-                print("⚠️ CHAT_ID non configurato, messaggio non inviato.")
+                print("⚠️ CHAT_ID o THREAD_ID non configurati, messaggio non inviato.")
         else:
             EVENTO_ATTUALE = None
             ORDINI_APERTI = False
@@ -168,42 +175,42 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🧹 Tutti gli ordini sono stati cancellati!")
 
 # ----------------------------------------------
-# Setup bot + ciclo eventi
+# Post-init
 # ----------------------------------------------
 async def post_init(app):
     asyncio.create_task(ciclo_eventi(app))
     await fetch_evento_giorno(app)
 
-
-
 # ----------------------------------------------
-# Cancella qualsiasi messaggio non comando
+# Cancella messaggi non comando SOLO nel thread configurato
 # ----------------------------------------------
-
-
-# Lista dei comandi consentiti
 COMANDI_CONSENTITI = ["/start", "/ordina", "/lista", "/cancella", "/clear"]
 
 async def elimina_non_comandi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message.text
+    chat_id = update.message.chat_id
+    thread_id = update.message.message_thread_id
+
+    # Cancella solo nel topic specificato
+    if chat_id != CHAT_ID or thread_id != THREAD_ID:
+        return
+
     if not msg:
-        # Cancella qualsiasi altro tipo di messaggio (immagine, sticker, ecc.)
         try:
             await update.message.delete()
         except Exception as e:
             print(f"Impossibile cancellare messaggio: {e}")
         return
 
-    # Se non è uno dei comandi consentiti → elimina
     if not any(msg.startswith(cmd) for cmd in COMANDI_CONSENTITI):
         try:
             await update.message.delete()
         except Exception as e:
             print(f"Impossibile cancellare messaggio: {e}")
 
-
-
-
+# ----------------------------------------------
+# Setup bot
+# ----------------------------------------------
 app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("ordina", ordina))
