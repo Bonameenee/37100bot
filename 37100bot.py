@@ -297,15 +297,18 @@ async def elimina_non_comandi(update: Update, context: ContextTypes.DEFAULT_TYPE
 # ----------------------------------------------
 app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 
-# Prima gestisci i comandi configurati
+# Gestisci i comandi configurati
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("ordina", ordina))
 app.add_handler(CommandHandler("lista", lista))
 app.add_handler(CommandHandler("cancella", cancella))
 app.add_handler(CommandHandler("clear", clear))
 
-# Poi cancella TUTTO il resto nel thread configurato
-app.add_handler(MessageHandler(filters.ALL, elimina_non_comandi))
+# Cancella i messaggi normali (non comandi)
+app.add_handler(MessageHandler(~filters.COMMAND, elimina_non_comandi))
+
+# Cancella i comandi non riconosciuti
+app.add_handler(MessageHandler(filters.COMMAND, elimina_non_comandi))
 
 print("🤖 Bot 37100 avviato con invio automatico eventi alle 08:00...")
 app.run_polling()
