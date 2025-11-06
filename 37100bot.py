@@ -173,12 +173,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # /ordina e altri
 # ----------------------------------------------
 async def ordina(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global ORDINI_APERTI
+    global ORDINI_APERTI, EVENTO_ATTUALE
 
     user = update.effective_user
     nome = f"{user.first_name or ''} {user.last_name or ''}".strip()
     user_id = user.id
 
+    # Prima controlla se c'è un evento
+    if not EVENTO_ATTUALE:
+        await update.message.reply_text("❌ Nessun evento oggi, gli ordini sono chiusi!")
+        return
+
+    # Poi controlla se gli ordini sono aperti
     if not ORDINI_APERTI and user_id not in ADMIN_ID:
         await update.message.reply_text("🚫 Gli ordini sono chiusi per oggi!")
         return
