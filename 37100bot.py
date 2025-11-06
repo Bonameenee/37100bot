@@ -27,6 +27,10 @@ API_TOKEN = config.get("API_TOKEN", "YOUR_TOKEN")
 CHAT_ID = config.get("CHAT_ID", None)
 THREAD_ID = config.get("THREAD_ID", None)
 
+# THREAD_ID obbligatorio: blocca l'avvio se non è configurato
+if THREAD_ID is None:
+    raise ValueError("❌ THREAD_ID obbligatorio: imposta 'THREAD_ID' in config.json con l'id del topic/forum del gruppo.")
+
 ORDINI_FILE = "ordini.json"
 ORDINI_APERTI = True
 EVENTO_ATTUALE = None
@@ -40,6 +44,39 @@ def carica_ordini():
             return json.load(f)
     return []
 
+
+async def ensure_allowed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """
+    Verifica che il messaggio/command provenga dalla chat e dal thread configurato.
+    Se non consentito tenta di cancellare il messaggio; se non possibile, manda una breve notifica.
+    Restituisce True se consentito, False altrimenti.
+    """
+    if not update or not update.message:
+        return False
+
+    chat_id = update.message.chat_id
+    thread_id = getattr(update.message, "message_thread_id", None)
+
+    # Chat must corrispondere (se impostato) e THREAD_ID è obbligatorio e deve corrispondere
+    allowed_chat = (CHAT_ID is None) or (chat_id == CHAT_ID)
+    allowed_thread = (thread_id == THREAD_ID)
+
+    if allowed_chat and allowed_thread:
+        return True
+
+    # Non consentito: prova a cancellare il messaggio per evitare spam
+    try:
+        await update.message.delete()
+    except Exception:
+        # Se non è possibile cancellare (es. chat privata), invia una breve info all'utente
+        try:
+            await update.message.reply_text(
+                "⚠️ Questo bot funziona solo nella chat/topic configurato. Per favore usa il thread corretto."
+            )
+        except Exception:
+            pass
+    return False
+
 def salva_ordini(ordini):
     with open(ORDINI_FILE, "w") as f:
         json.dump(ordini, f, indent=4)
@@ -47,7 +84,7 @@ def salva_ordini(ordini):
 # ----------------------------------------------
 # Funzione per fetch evento del giorno
 # ----------------------------------------------
-async def fetch_evento_giorno(app):
+async def fetch_evento_giorno(app, send_auto_message: bool = True):
     global EVENTO_ATTUALE, ORDINI_APERTI
     try:
         url = f"{API_BASE_URL}/api/events/today?token={API_TOKEN}"
@@ -59,8 +96,8 @@ async def fetch_evento_giorno(app):
             EVENTO_ATTUALE = data
             ORDINI_APERTI = True
             print(f"✅ Evento di oggi: {event}")
-
-            # invio automatico messaggio giornaliero SOLO nel thread configurato
+        # invio automatico messaggio giornaliero SOLO nel thread configurato
+        if send_auto_message:
             if CHAT_ID and THREAD_ID is not None:
                 data_str = data.get("date", "Data non disponibile")
                 msg = (
@@ -92,7 +129,39 @@ async def fetch_evento_giorno(app):
 async def ciclo_eventi(app):
     while True:
         now = datetime.datetime.now()
-        if now.hour == 8 and now.minute == 0:
+        # Mercoledì alle 08:00: fetch evento e invia il messaggio di benvenuto (senza bisogno di /start)
+        # weekday(): Monday=0, Tuesday=1, Wednesday=2
+        if now.weekday() == 2 and now.hour == 8 and now.minute == 0:
+            # aggiorna l'evento ma non inviare il messaggio automatico duplicato
+            await fetch_evento_giorno(app, send_auto_message=False)
+            # invia il messaggio di benvenuto come /start (solo se configurato il topic)
+            try:
+                if CHAT_ID and THREAD_ID is not None:
+                    if EVENTO_ATTUALE:
+                        data_str = EVENTO_ATTUALE.get("date", "Data non disponibile")
+                        title = EVENTO_ATTUALE.get("event", {}).get("title", "Nessun evento oggi")
+                    else:
+                        data_str = now.strftime("%Y-%m-%d")
+                        title = "Nessun evento oggi"
+
+                    msg = (
+                        f"👋 Benvenuto nel bot 37100!\n"
+                        f"🗓 *Data:* {data_str}\n"
+                        f"🎉 *Evento del giorno:* {title}\n\n"
+                        "Usa /ordina per fare un ordine 🍕"
+                    )
+                    await app.bot.send_message(
+                        chat_id=CHAT_ID,
+                        message_thread_id=THREAD_ID,
+                        text=msg,
+                        parse_mode="Markdown"
+                    )
+                else:
+                    print("⚠️ CHAT_ID o THREAD_ID non configurati, messaggio di benvenuto non inviato.")
+            except Exception as e:
+                print(f"⚠️ Errore invio messaggio di benvenuto: {e}")
+        elif now.hour == 8 and now.minute == 0:
+            # comportamento di default: fetch e invio automatico se presente
             await fetch_evento_giorno(app)
         if now.hour == 20 and now.minute == 0:
             global ORDINI_APERTI
@@ -105,6 +174,9 @@ async def ciclo_eventi(app):
 # ----------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global EVENTO_ATTUALE
+    # Restrizione uso bot a chat/thread configurati
+    if not await ensure_allowed(update, context):
+        return
     if EVENTO_ATTUALE:
         data_str = EVENTO_ATTUALE.get("date", "Data non disponibile")
         title = EVENTO_ATTUALE.get("event", {}).get("title", "Nessun evento oggi")
@@ -125,6 +197,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ----------------------------------------------
 async def ordina(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ORDINI_APERTI
+    # Restrizione uso bot a chat/thread configurati
+    if not await ensure_allowed(update, context):
+        return
+
     user = update.effective_user
     nome = f"{user.first_name or ''} {user.last_name or ''}".strip()
     user_id = user.id
@@ -149,6 +225,10 @@ async def ordina(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Ordine registrato per {nome}: {ordine_testo}")
 
 async def lista(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Restrizione uso bot a chat/thread configurati
+    if not await ensure_allowed(update, context):
+        return
+
     ordini = carica_ordini()
     if not ordini:
         await update.message.reply_text("📭 Nessun ordine presente.")
@@ -157,6 +237,10 @@ async def lista(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📋 Lista ordini:\n" + testo)
 
 async def cancella(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Restrizione uso bot a chat/thread configurati
+    if not await ensure_allowed(update, context):
+        return
+
     user_id = update.effective_user.id
     ordini = carica_ordini()
     nuovi = [o for o in ordini if o["id"] != user_id]
@@ -167,6 +251,10 @@ async def cancella(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🗑️ Il tuo ordine è stato cancellato.")
 
 async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Restrizione uso bot a chat/thread configurati
+    if not await ensure_allowed(update, context):
+        return
+
     user_id = update.effective_user.id
     if user_id not in ADMIN_ID:
         await update.message.reply_text("❌ Non hai i permessi per questo comando.")
