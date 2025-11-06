@@ -275,17 +275,20 @@ async def post_init(app):
 COMANDI_CONSENTITI = ["/start", "/ordina", "/lista", "/cancella", "/clear"]
 
 async def elimina_non_comandi(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message.text
+    """Elimina tutti i messaggi nel thread configurato che non sono gestiti dai CommandHandler"""
+    if not update.message:
+        return
+        
     chat_id = update.message.chat_id
     thread_id = update.message.message_thread_id
-
-    # Cancella SOLO se siamo nel thread configurato E il messaggio non è un comando
+    
+    # Cancella SOLO se siamo nel thread configurato
     if chat_id == CHAT_ID and thread_id == THREAD_ID:
-        if not msg or not any(msg.startswith(cmd) for cmd in COMANDI_CONSENTITI):
-            try:
-                await update.message.delete()
-            except Exception as e:
-                print(f"Impossibile cancellare messaggio: {e}")
+        try:
+            await update.message.delete()
+        except Exception as e:
+            print(f"Impossibile cancellare messaggio: {e}")
+            
     # Se non siamo nel thread configurato, ignora il messaggio
     return
 
@@ -294,15 +297,15 @@ async def elimina_non_comandi(update: Update, context: ContextTypes.DEFAULT_TYPE
 # ----------------------------------------------
 app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 
-# Prima gestisci i messaggi non comando (altrimenti cancella anche i comandi)
-app.add_handler(MessageHandler(~filters.COMMAND, elimina_non_comandi))
-
-# Poi gestisci i comandi
+# Prima gestisci i comandi configurati
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("ordina", ordina))
 app.add_handler(CommandHandler("lista", lista))
 app.add_handler(CommandHandler("cancella", cancella))
 app.add_handler(CommandHandler("clear", clear))
+
+# Poi cancella TUTTO il resto nel thread configurato
+app.add_handler(MessageHandler(filters.ALL, elimina_non_comandi))
 
 print("🤖 Bot 37100 avviato con invio automatico eventi alle 08:00...")
 app.run_polling()
