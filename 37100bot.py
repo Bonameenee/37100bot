@@ -1,10 +1,11 @@
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 import asyncio
+import contextlib
 import datetime
 import json
 import os
-import requests
+import aiohttp
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 # ----------------------------------------------
 # Config
@@ -30,17 +31,46 @@ THREAD_ID = config.get("THREAD_ID", None)
 ORDINI_FILE = "ordini.json"
 ORDINI_APERTI = True
 EVENTO_ATTUALE = None
+MAX_CLEAN_MESSAGES = 200
 
 # ----------------------------------------------
 # Utils
 # ----------------------------------------------
+async def sleep_until(hour: int, minute: int):
+    """Sleep until the next occurrence of the given hour/minute."""
+    while True:
+        now = datetime.datetime.now()
+        target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if now >= target:
+            target += datetime.timedelta(days=1)
+        delta = (target - now).total_seconds()
+        if delta <= 0:
+            await asyncio.sleep(1)
+            continue
+        await asyncio.sleep(delta)
+        return
+
+
+async def invia_messaggio_gruppo(bot, text: str, context_desc: str = "messaggio"):
+    """Invia un messaggio nel gruppo configurato gestendo topic e log degli errori."""
+    if CHAT_ID is None:
+        print(f"⚠️ CHAT_ID non configurato, {context_desc} non inviato.")
+        return
+
+    kwargs = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
+    if THREAD_ID is not None:
+        kwargs["message_thread_id"] = THREAD_ID
+
+    try:
+        await bot.send_message(**kwargs)
+    except Exception as e:
+        print(f"⚠️ Errore invio {context_desc}: {e}")
+
 def carica_ordini():
     if os.path.exists(ORDINI_FILE):
         with open(ORDINI_FILE, "r") as f:
             return json.load(f)
     return []
-
-
 
 
 def salva_ordini(ordini):
@@ -52,97 +82,89 @@ def salva_ordini(ordini):
 # ----------------------------------------------
 async def fetch_evento_giorno(app, send_auto_message: bool = True):
     global EVENTO_ATTUALE, ORDINI_APERTI
+    session = app.bot_data.get("http_session")
+    if not isinstance(session, aiohttp.ClientSession):
+        print("⚠️ Sessione HTTP non disponibile per fetch_evento_giorno.")
+        return
+
+    url = f"{API_BASE_URL}/api/events/today?token={API_TOKEN}"
+    timeout = aiohttp.ClientTimeout(total=5)
     try:
-        url = f"{API_BASE_URL}/api/events/today?token={API_TOKEN}"
-        response = requests.get(url, timeout=5)
-        response.raise_for_status()
-        data = response.json()
-        event = data.get("event", {}).get("title", None)
-        
-        if not event:
-            EVENTO_ATTUALE = None
-            ORDINI_APERTI = False
-            print("ℹ️ Nessun evento per oggi.")
-            if send_auto_message and CHAT_ID is not None:
-                msg = (
-                    f"👋 Buongiorno 37100!\n"
-                    f"🗓 *Data:* {datetime.datetime.now().strftime('%Y-%m-%d')}\n"
-                    f"ℹ️ *Nessun evento oggi*\n\n"
-                    "❌ Gli ordini sono chiusi."
-                )
-                await app.bot.send_message(
-                    chat_id=CHAT_ID,
-                    text=msg,
-                    parse_mode="Markdown"
-                )
-            return
-            
-        EVENTO_ATTUALE = data
-        ORDINI_APERTI = True
-        print(f"✅ Evento di oggi: {event}")
-        
-        if send_auto_message and CHAT_ID is not None:
-            data_str = data.get("date", "Data non disponibile")
-            msg = (
-                f"👋 Buongiorno 37100!\n"
-                f"🗓 *Data:* {data_str}\n"
-                f"🎉 *Evento del giorno:* {event}\n\n"
-                "Usa /ordina per fare un ordine 🍕\nUsa /cancella per cancellarlo"
-            )
-            await app.bot.send_message(
-                chat_id=CHAT_ID,
-                text=msg,
-                parse_mode="Markdown"
-            )
-    except Exception as e:
+        async with session.get(url, timeout=timeout) as response:
+            response.raise_for_status()
+            data = await response.json()
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
         print(f"⚠️ Errore durante il fetch evento: {e}")
         EVENTO_ATTUALE = None
         ORDINI_APERTI = False
+        return
+    except Exception as e:
+        print(f"⚠️ Errore imprevisto durante il fetch evento: {e}")
+        EVENTO_ATTUALE = None
+        ORDINI_APERTI = False
+        return
+
+    event = data.get("event", {}).get("title")
+    if not event:
+        EVENTO_ATTUALE = None
+        ORDINI_APERTI = False
+        print("ℹ️ Nessun evento per oggi.")
+        if send_auto_message:
+            msg = (
+                f"👋 Buongiorno 37100!\n"
+                f"🗓 *Data:* {datetime.datetime.now().strftime('%Y-%m-%d')}\n"
+                f"ℹ️ *Nessun evento oggi*\n\n"
+                "❌ Gli ordini sono chiusi."
+            )
+            await invia_messaggio_gruppo(app.bot, msg, "messaggio automatico")
+        return
+
+    EVENTO_ATTUALE = data
+    ORDINI_APERTI = True
+    print(f"✅ Evento di oggi: {event}")
+
+    if send_auto_message:
+        data_str = data.get("date", "Data non disponibile")
+        msg = (
+            f"👋 Buongiorno 37100!\n"
+            f"🗓 *Data:* {data_str}\n"
+            f"🎉 *Evento del giorno:* {event}\n\n"
+            "Usa /ordina per fare un ordine 🍕\nUsa /cancella per cancellarlo"
+        )
+        await invia_messaggio_gruppo(app.bot, msg, "messaggio automatico")
 
 # ----------------------------------------------
 # Task ciclico giornaliero
 # ----------------------------------------------
 async def ciclo_eventi(app):
     while True:
+        await sleep_until(8, 0)
         now = datetime.datetime.now()
         # Mercoledì alle 08:00: fetch evento e invia il messaggio di benvenuto (senza bisogno di /start)
         # weekday(): Monday=0, Tuesday=1, Wednesday=2
-        if now.weekday() == 2 and now.hour == 8 and now.minute == 0:
-            # aggiorna l'evento ma non inviare il messaggio automatico duplicato
+        if now.weekday() == 2:
             await fetch_evento_giorno(app, send_auto_message=False)
-            # invia il messaggio di benvenuto come /start (solo se configurato il topic)
-            try:
-                if CHAT_ID is not None:
-                    if EVENTO_ATTUALE:
-                        data_str = EVENTO_ATTUALE.get("date", "Data non disponibile")
-                        title = EVENTO_ATTUALE.get("event", {}).get("title", "Nessun evento oggi")
-                    else:
-                        data_str = now.strftime("%Y-%m-%d")
-                        title = "Nessun evento oggi"
+            if EVENTO_ATTUALE:
+                data_str = EVENTO_ATTUALE.get("date", "Data non disponibile")
+                title = EVENTO_ATTUALE.get("event", {}).get("title", "Nessun evento oggi")
+            else:
+                data_str = now.strftime("%Y-%m-%d")
+                title = "Nessun evento oggi"
 
-                    msg = (
-                        f"👋 Benvenuto nel bot 37100!\n"
-                        f"🗓 *Data:* {data_str}\n"
-                        f"🎉 *Evento del giorno:* {title}\n\n"
-                        "Usa /ordina per fare un ordine 🍕"
-                    )
-                    await app.bot.send_message(
-                        chat_id=CHAT_ID,
-                        text=msg,
-                        parse_mode="Markdown"
-                    )
-                else:
-                    print("⚠️ CHAT_ID non configurato, messaggio di benvenuto non inviato.")
-            except Exception as e:
-                print(f"⚠️ Errore invio messaggio di benvenuto: {e}")
-        elif now.hour == 8 and now.minute == 0:
-            # comportamento di default: fetch e invio automatico se presente
+            msg = (
+                f"👋 Benvenuto nel bot 37100!\n"
+                f"🗓 *Data:* {data_str}\n"
+                f"🎉 *Evento del giorno:* {title}\n\n"
+                "Usa /ordina per fare un ordine 🍕"
+            )
+            await invia_messaggio_gruppo(app.bot, msg, "messaggio di benvenuto")
+        else:
             await fetch_evento_giorno(app)
-        if now.hour == 20 and now.minute == 0:
-            global ORDINI_APERTI
-            ORDINI_APERTI = False
-            print("🕗 Ordini chiusi per oggi.")
-        await asyncio.sleep(60)
+
+        await sleep_until(20, 0)
+        global ORDINI_APERTI
+        ORDINI_APERTI = False
+        print("🕗 Ordini chiusi per oggi.")
 
 # ----------------------------------------------
 # /start
@@ -237,8 +259,16 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Post-init
 # ----------------------------------------------
 async def post_init(app):
+    timeout = aiohttp.ClientTimeout(total=10)
+    app.bot_data["http_session"] = aiohttp.ClientSession(timeout=timeout)
     asyncio.create_task(ciclo_eventi(app))
     await fetch_evento_giorno(app)
+
+
+async def on_shutdown(app):
+    session = app.bot_data.get("http_session")
+    if isinstance(session, aiohttp.ClientSession) and not session.closed:
+        await session.close()
 
 # ----------------------------------------------
 # Comando per cancellare tutti i messaggi (solo admin)
@@ -250,6 +280,15 @@ async def clean(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Non hai i permessi per questo comando.")
         return
 
+    limit = MAX_CLEAN_MESSAGES
+    if context.args:
+        try:
+            requested = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("⚠️ Valore non valido. Usa ad esempio /clean 50.")
+            return
+        limit = max(1, min(requested, MAX_CLEAN_MESSAGES))
+
     try:
         # Memorizza l'ID del messaggio di comando per cancellarlo per ultimo
         command_message_id = update.message.message_id
@@ -257,21 +296,28 @@ async def clean(update: Update, context: ContextTypes.DEFAULT_TYPE):
         thread_id = update.message.message_thread_id
 
         # Informa che sta iniziando la pulizia
-        status_msg = await update.message.reply_text("🧹 Pulizia messaggi in corso...")
+        status_msg = await update.message.reply_text(
+            f"🧹 Pulizia in corso (max {limit} messaggi)..."
+        )
         
-        # Cancella tutti i messaggi dal più recente
+        # Cancella i messaggi partendo dal comando indietro
         deleted = 0
-        for i in range(command_message_id, 0, -1):
+        min_message_id = max(command_message_id - limit, 0)
+        for message_id in range(command_message_id, min_message_id, -1):
             try:
-                await context.bot.delete_message(chat_id=chat_id, message_id=i)
+                await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
                 deleted += 1
             except Exception:
                 continue
-        
-        # Cancella il messaggio di stato e il comando stesso
+            await asyncio.sleep(0)  # cede il controllo all'event loop
+
+        # Aggiorna lo stato e ripulisce i messaggi informativi
         try:
+            await status_msg.edit_text(f"✅ Cancellati {deleted} messaggi (max {limit}).")
+            await asyncio.sleep(1)
             await status_msg.delete()
-            await update.message.delete()
+            with contextlib.suppress(Exception):
+                await update.message.delete()
         except Exception:
             pass
             
@@ -284,7 +330,7 @@ async def clean(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ----------------------------------------------
 # Setup bot
 # ----------------------------------------------
-app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
+app = ApplicationBuilder().token(TOKEN).post_init(post_init).post_shutdown(on_shutdown).build()
 
 # Gestisci i comandi
 app.add_handler(CommandHandler("start", start))
