@@ -58,31 +58,42 @@ async def fetch_evento_giorno(app, send_auto_message: bool = True):
         response.raise_for_status()
         data = response.json()
         event = data.get("event", {}).get("title", None)
-        if event:
-            EVENTO_ATTUALE = data
-            ORDINI_APERTI = True
-            print(f"✅ Evento di oggi: {event}")
-        # invio automatico messaggio giornaliero SOLO nel thread configurato
-        if send_auto_message:
-            if CHAT_ID is not None:
-                data_str = data.get("date", "Data non disponibile")
+        
+        if not event:
+            EVENTO_ATTUALE = None
+            ORDINI_APERTI = False
+            print("ℹ️ Nessun evento per oggi.")
+            if send_auto_message and CHAT_ID is not None:
                 msg = (
                     f"👋 Buongiorno 37100!\n"
-                    f"🗓 *Data:* {data_str}\n"
-                    f"🎉 *Evento del giorno:* {event}\n\n"
-                    "Usa /ordina per fare un ordine 🍕\nUsa /cancella per cancellarlo"
+                    f"🗓 *Data:* {datetime.datetime.now().strftime('%Y-%m-%d')}\n"
+                    f"ℹ️ *Nessun evento oggi*\n\n"
+                    "❌ Gli ordini sono chiusi."
                 )
                 await app.bot.send_message(
                     chat_id=CHAT_ID,
                     text=msg,
                     parse_mode="Markdown"
                 )
-            else:
-                print("⚠️ CHAT_ID non configurato, messaggio non inviato.")
-        else:
-            EVENTO_ATTUALE = None
-            ORDINI_APERTI = False
-            print("ℹ️ Nessun evento per oggi.")
+            return
+            
+        EVENTO_ATTUALE = data
+        ORDINI_APERTI = True
+        print(f"✅ Evento di oggi: {event}")
+        
+        if send_auto_message and CHAT_ID is not None:
+            data_str = data.get("date", "Data non disponibile")
+            msg = (
+                f"👋 Buongiorno 37100!\n"
+                f"🗓 *Data:* {data_str}\n"
+                f"🎉 *Evento del giorno:* {event}\n\n"
+                "Usa /ordina per fare un ordine 🍕\nUsa /cancella per cancellarlo"
+            )
+            await app.bot.send_message(
+                chat_id=CHAT_ID,
+                text=msg,
+                parse_mode="Markdown"
+            )
     except Exception as e:
         print(f"⚠️ Errore durante il fetch evento: {e}")
         EVENTO_ATTUALE = None
@@ -138,19 +149,24 @@ async def ciclo_eventi(app):
 # ----------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global EVENTO_ATTUALE
+    data_str = datetime.datetime.now().strftime("%Y-%m-%d")
+    
     if EVENTO_ATTUALE:
-        data_str = EVENTO_ATTUALE.get("date", "Data non disponibile")
-        title = EVENTO_ATTUALE.get("event", {}).get("title", "Nessun evento oggi")
+        title = EVENTO_ATTUALE.get("event", {}).get("title")
+        msg = (
+            f"👋 Benvenuto nel bot 37100!\n"
+            f"🗓 *Data:* {data_str}\n"
+            f"🎉 *Evento del giorno:* {title}\n\n"
+            "Usa /ordina per fare un ordine 🍕\nUsa /cancella per cancellarlo"
+        )
     else:
-        data_str = datetime.datetime.now().strftime("%Y-%m-%d")
-        title = "Nessun evento oggi"
-
-    msg = (
-        f"👋 Benvenuto nel bot 37100!\n"
-        f"🗓 *Data:* {data_str}\n"
-        f"🎉 *Evento del giorno:* {title}\n\n"
-        "Usa /ordina per fare un ordine 🍕"
-    )
+        msg = (
+            f"👋 Benvenuto nel bot 37100!\n"
+            f"🗓 *Data:* {data_str}\n"
+            f"ℹ️ *Nessun evento oggi*\n\n"
+            "❌ Gli ordini sono chiusi."
+        )
+    
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 # ----------------------------------------------
@@ -219,6 +235,47 @@ async def post_init(app):
     await fetch_evento_giorno(app)
 
 # ----------------------------------------------
+# Comando per cancellare tutti i messaggi (solo admin)
+# ----------------------------------------------
+async def clean(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancella tutti i messaggi nel thread corrente (solo admin)"""
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_ID:
+        await update.message.reply_text("❌ Non hai i permessi per questo comando.")
+        return
+
+    try:
+        # Memorizza l'ID del messaggio di comando per cancellarlo per ultimo
+        command_message_id = update.message.message_id
+        chat_id = update.message.chat_id
+        thread_id = update.message.message_thread_id
+
+        # Informa che sta iniziando la pulizia
+        status_msg = await update.message.reply_text("🧹 Pulizia messaggi in corso...")
+        
+        # Cancella tutti i messaggi dal più recente
+        deleted = 0
+        for i in range(command_message_id, 0, -1):
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=i)
+                deleted += 1
+            except Exception:
+                continue
+        
+        # Cancella il messaggio di stato e il comando stesso
+        try:
+            await status_msg.delete()
+            await update.message.delete()
+        except Exception:
+            pass
+            
+        print(f"✅ Cancellati {deleted} messaggi dal thread {thread_id}")
+        
+    except Exception as e:
+        print(f"⚠️ Errore durante la pulizia messaggi: {e}")
+        await update.message.reply_text("⚠️ Errore durante la cancellazione dei messaggi.")
+
+# ----------------------------------------------
 # Setup bot
 # ----------------------------------------------
 app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
@@ -229,6 +286,7 @@ app.add_handler(CommandHandler("ordina", ordina))
 app.add_handler(CommandHandler("lista", lista))
 app.add_handler(CommandHandler("cancella", cancella))
 app.add_handler(CommandHandler("clear", clear))
+app.add_handler(CommandHandler("clean", clean))  # Nuovo comando per pulire i messaggi
 
 print("🤖 Bot 37100 avviato con invio automatico eventi alle 08:00...")
 app.run_polling()
