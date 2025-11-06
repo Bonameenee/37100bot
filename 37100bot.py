@@ -270,45 +270,16 @@ async def post_init(app):
     await fetch_evento_giorno(app)
 
 # ----------------------------------------------
-# Cancella messaggi non comando SOLO nel thread configurato
-# ----------------------------------------------
-COMANDI_CONSENTITI = ["/start", "/ordina", "/lista", "/cancella", "/clear"]
-
-async def elimina_non_comandi(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Elimina tutti i messaggi nel thread configurato che non sono gestiti dai CommandHandler"""
-    if not update.message:
-        return
-        
-    chat_id = update.message.chat_id
-    thread_id = update.message.message_thread_id
-    
-    # Cancella SOLO se siamo nel thread configurato
-    if chat_id == CHAT_ID and thread_id == THREAD_ID:
-        try:
-            await update.message.delete()
-        except Exception as e:
-            print(f"Impossibile cancellare messaggio: {e}")
-            
-    # Se non siamo nel thread configurato, ignora il messaggio
-    return
-
-# ----------------------------------------------
 # Setup bot
 # ----------------------------------------------
 app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 
-# Gestisci i comandi configurati
+# Gestisci i comandi
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("ordina", ordina))
 app.add_handler(CommandHandler("lista", lista))
 app.add_handler(CommandHandler("cancella", cancella))
 app.add_handler(CommandHandler("clear", clear))
-
-# Cancella i messaggi normali (non comandi)
-app.add_handler(MessageHandler(~filters.COMMAND, elimina_non_comandi))
-
-# Cancella i comandi non riconosciuti
-app.add_handler(MessageHandler(filters.COMMAND, elimina_non_comandi))
 
 print("🤖 Bot 37100 avviato con invio automatico eventi alle 08:00...")
 app.run_polling()
