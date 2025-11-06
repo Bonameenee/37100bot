@@ -7,9 +7,6 @@ import aiohttp
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# ----------------------------------------------
-# Config
-# ----------------------------------------------
 CONFIG_FILE = "config.json"
 
 def carica_config():
@@ -24,7 +21,6 @@ ADMIN_ID = config["ADMIN_ID"]
 API_BASE_URL = config.get("API_BASE_URL", "http://localhost:3000")
 API_TOKEN = config.get("API_TOKEN", "YOUR_TOKEN")
 
-# Chat e topic dove inviare messaggi e fare cleanup (opzionali)
 CHAT_ID = config.get("CHAT_ID", None)
 THREAD_ID = config.get("THREAD_ID", None)
 
@@ -33,9 +29,6 @@ ORDINI_APERTI = True
 EVENTO_ATTUALE = None
 MAX_CLEAN_MESSAGES = 200
 
-# ----------------------------------------------
-# Utils
-# ----------------------------------------------
 async def sleep_until(hour: int, minute: int):
     """Sleep until the next occurrence of the given hour/minute."""
     while True:
@@ -77,9 +70,6 @@ def salva_ordini(ordini):
     with open(ORDINI_FILE, "w") as f:
         json.dump(ordini, f, indent=4)
 
-# ----------------------------------------------
-# Funzione per fetch evento del giorno
-# ----------------------------------------------
 async def fetch_evento_giorno(app, send_auto_message: bool = True):
     global EVENTO_ATTUALE, ORDINI_APERTI
     session = app.bot_data.get("http_session")
@@ -133,15 +123,10 @@ async def fetch_evento_giorno(app, send_auto_message: bool = True):
         )
         await invia_messaggio_gruppo(app.bot, msg, "messaggio automatico")
 
-# ----------------------------------------------
-# Task ciclico giornaliero
-# ----------------------------------------------
 async def ciclo_eventi(app):
     while True:
         await sleep_until(8, 0)
         now = datetime.datetime.now()
-        # Mercoledì alle 08:00: fetch evento e invia il messaggio di benvenuto (senza bisogno di /start)
-        # weekday(): Monday=0, Tuesday=1, Wednesday=2
         if now.weekday() == 2:
             await fetch_evento_giorno(app, send_auto_message=False)
             if EVENTO_ATTUALE:
@@ -166,9 +151,6 @@ async def ciclo_eventi(app):
         ORDINI_APERTI = False
         print("🕗 Ordini chiusi per oggi.")
 
-# ----------------------------------------------
-# /start
-# ----------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global EVENTO_ATTUALE
     data_str = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -191,9 +173,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-# ----------------------------------------------
-# /ordina e altri
-# ----------------------------------------------
 async def ordina(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global ORDINI_APERTI, EVENTO_ATTUALE
 
@@ -201,12 +180,10 @@ async def ordina(update: Update, context: ContextTypes.DEFAULT_TYPE):
     nome = f"{user.first_name or ''} {user.last_name or ''}".strip()
     user_id = user.id
 
-    # Prima controlla se c'è un evento
     if not EVENTO_ATTUALE:
         await update.message.reply_text("❌ Nessun evento oggi, gli ordini sono chiusi!")
         return
 
-    # Poi controlla se gli ordini sono aperti
     if not ORDINI_APERTI and user_id not in ADMIN_ID:
         await update.message.reply_text("🚫 Gli ordini sono chiusi per oggi!")
         return
@@ -255,9 +232,6 @@ async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     salva_ordini([])
     await update.message.reply_text("🧹 Tutti gli ordini sono stati cancellati!")
 
-# ----------------------------------------------
-# Post-init
-# ----------------------------------------------
 async def post_init(app):
     timeout = aiohttp.ClientTimeout(total=10)
     app.bot_data["http_session"] = aiohttp.ClientSession(timeout=timeout)
@@ -270,9 +244,6 @@ async def on_shutdown(app):
     if isinstance(session, aiohttp.ClientSession) and not session.closed:
         await session.close()
 
-# ----------------------------------------------
-# Comando per cancellare tutti i messaggi (solo admin)
-# ----------------------------------------------
 async def clean(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Cancella tutti i messaggi nel thread corrente (solo admin)"""
     user_id = update.effective_user.id
@@ -290,17 +261,14 @@ async def clean(update: Update, context: ContextTypes.DEFAULT_TYPE):
         limit = max(1, min(requested, MAX_CLEAN_MESSAGES))
 
     try:
-        # Memorizza l'ID del messaggio di comando per cancellarlo per ultimo
         command_message_id = update.message.message_id
         chat_id = update.message.chat_id
         thread_id = update.message.message_thread_id
 
-        # Informa che sta iniziando la pulizia
         status_msg = await update.message.reply_text(
             f"🧹 Pulizia in corso (max {limit} messaggi)..."
         )
         
-        # Cancella i messaggi partendo dal comando indietro
         deleted = 0
         min_message_id = max(command_message_id - limit, 0)
         for message_id in range(command_message_id, min_message_id, -1):
@@ -309,9 +277,8 @@ async def clean(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 deleted += 1
             except Exception:
                 continue
-            await asyncio.sleep(0)  # cede il controllo all'event loop
+            await asyncio.sleep(0)
 
-        # Aggiorna lo stato e ripulisce i messaggi informativi
         try:
             await status_msg.edit_text(f"✅ Cancellati {deleted} messaggi (max {limit}).")
             await asyncio.sleep(1)
@@ -327,18 +294,14 @@ async def clean(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"⚠️ Errore durante la pulizia messaggi: {e}")
         await update.message.reply_text("⚠️ Errore durante la cancellazione dei messaggi.")
 
-# ----------------------------------------------
-# Setup bot
-# ----------------------------------------------
 app = ApplicationBuilder().token(TOKEN).post_init(post_init).post_shutdown(on_shutdown).build()
 
-# Gestisci i comandi
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("ordina", ordina))
 app.add_handler(CommandHandler("lista", lista))
 app.add_handler(CommandHandler("cancella", cancella))
 app.add_handler(CommandHandler("clear", clear))
-app.add_handler(CommandHandler("clean", clean))  # Nuovo comando per pulire i messaggi
+app.add_handler(CommandHandler("clean", clean))
 
 print("🤖 Bot 37100 avviato con invio automatico eventi alle 08:00...")
 app.run_polling()
