@@ -279,33 +279,30 @@ async def elimina_non_comandi(update: Update, context: ContextTypes.DEFAULT_TYPE
     chat_id = update.message.chat_id
     thread_id = update.message.message_thread_id
 
-    # Cancella solo nel topic specificato
-    if chat_id != CHAT_ID or thread_id != THREAD_ID:
-        return
-
-    if not msg:
-        try:
-            await update.message.delete()
-        except Exception as e:
-            print(f"Impossibile cancellare messaggio: {e}")
-        return
-
-    if not any(msg.startswith(cmd) for cmd in COMANDI_CONSENTITI):
-        try:
-            await update.message.delete()
-        except Exception as e:
-            print(f"Impossibile cancellare messaggio: {e}")
+    # Cancella SOLO se siamo nel thread configurato E il messaggio non è un comando
+    if chat_id == CHAT_ID and thread_id == THREAD_ID:
+        if not msg or not any(msg.startswith(cmd) for cmd in COMANDI_CONSENTITI):
+            try:
+                await update.message.delete()
+            except Exception as e:
+                print(f"Impossibile cancellare messaggio: {e}")
+    # Se non siamo nel thread configurato, ignora il messaggio
+    return
 
 # ----------------------------------------------
 # Setup bot
 # ----------------------------------------------
 app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
+
+# Prima gestisci i messaggi non comando (altrimenti cancella anche i comandi)
+app.add_handler(MessageHandler(~filters.COMMAND, elimina_non_comandi))
+
+# Poi gestisci i comandi
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("ordina", ordina))
 app.add_handler(CommandHandler("lista", lista))
 app.add_handler(CommandHandler("cancella", cancella))
 app.add_handler(CommandHandler("clear", clear))
-app.add_handler(MessageHandler(filters.ALL, elimina_non_comandi))
 
 print("🤖 Bot 37100 avviato con invio automatico eventi alle 08:00...")
 app.run_polling()
